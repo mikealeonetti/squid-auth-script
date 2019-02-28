@@ -1,0 +1,105 @@
+#!/usr/bin/perl
+#################################################
+# Squid Arms and Tentacles: Authentication (version 1.0)
+#
+#        Mike A. Leonetti
+#          2009-07-29
+# http://www.mikealeonetti.com/wiki/index.php/Squid_Arms_and_Tentacles:_Authentication
+#
+# Copyright (c) 2009-2012 Mike A. Leonetti
+# All rights reserved.
+#
+# This package is free software; you can redistribute it and/or
+# modify it under the same terms as Perl itself.
+#################################################
+
+use strict;
+use DBI;
+use Pod::Usage;
+
+## MySQL info
+my $mysql_host = 'localhost';
+my $mysql_user = 'squidauth';
+my $mysql_pass = 'squidauth';
+my $mysql_db = 'squidauth';
+
+##
+# Some more vars
+##
+$|=1;
+my $ip_address;
+my $group;
+my $current_time;
+my @result;
+my $dbh;
+my $query;
+my $query_handle;
+
+##
+# Start
+##
+# Make sure we have a group
+pod2usage( -exitstatus => 1, -verbose => 0 ) unless( $ARGV[0] );
+
+# Save the group
+$group = $ARGV[ 0 ];
+
+while( <STDIN> )
+{
+	# Trim trim
+	s/^\s*//;
+	s/\s*$//;
+	
+	# Store it so we don't lose it
+	$ip_address = $_;
+
+        $current_time = time();
+	$dbh = DBI->connect( "dbi:mysql:$mysql_db;$mysql_host", $mysql_user, $mysql_pass );
+
+	$dbh->do( qq/DELETE FROM addresses WHERE `end_time`<$current_time;/ );
+	$dbh->do( q/DELETE FROM `groups` WHERE NOT EXISTS (SELECT `user` FROM `addresses` WHERE `user`=`groups`.`user`);/ );
+
+        $query_handle = $dbh->prepare( qq/SELECT `addresses`.`user` FROM `addresses` JOIN `groups` USING(`user`) WHERE `addresses`.`ip`='$ip_address' AND `groups`.`group`='$group' LIMIT 0, 1;/ );
+        $query_handle->execute();
+
+	# Make sure the value exists first
+	@result = $query_handle->fetchrow_array();
+        if( @result and defined($result[0]) )
+        {
+		print( "OK user=".$result[0]."\n" );
+        }
+        else
+	{
+		print( "ERR\n" );
+        }
+        $query_handle->finish();
+	$dbh->disconnect();
+}
+
+__END__
+
+=head1 NAME
+
+squidauth - Check for an IP's auth status.
+
+=head1 SYNOPSIS
+
+squidauth [group]
+
+ Group: The group to auth.
+
+=head1 OPTIONS
+
+=over 8
+
+=item B<group>
+
+This specifies the group that the user must belong to to be allowed. This specifies a single group and not a list of groups.
+
+=back
+
+=head1 NOTE
+
+This script is designed to be called directly by Squid. Please only call this script manually in a testing scenario.
+
+=cut

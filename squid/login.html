@@ -1,0 +1,50 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-1" />
+<title>Login to use the Internet</title>
+
+<link href="/squid/login-box.css" rel="stylesheet" type="text/css" />
+</head>
+
+<body>
+
+
+<div style="padding: 100px 0 0 250px;">
+
+
+<div id="login-box">
+<form action="{$action}" method="post" name="login">
+<H2>Internet Login</H2>
+<span style="color: orange; font-weight: bold;">{$error}</span>
+<br />
+<br />
+<div id="login-box-name" style="margin-top:20px;">Username:</div><div id="login-box-field" style="margin-top:20px;"><input name="username" class="form-login" title="Username" value="{$username}" size="30" maxlength="64" /></div>
+<div id="login-box-name">Password:</div><div id="login-box-field"><input name="password" type="password" class="form-login" title="Password" value="{$password}" size="30" maxlength="64" /></div>
+<div id="login-box-name">Session time:</div><div id="login-box-field"><input name="time" type="number" class="form-login" title="Session time in minutes" value="{$time}" size="30" maxlength="16" /></div>
+<br />
+<br />
+<input type="hidden" name="action" value="login" />
+<input type="hidden" name="referrer" value="{$referrer}" />
+<input type="image" src="/squid/images/login-btn.png" width="103" :eight="42" style="margin-left:90px;" border="0" alt="Login" /></form>
+
+
+
+</div>
+
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+</body>
+</html>

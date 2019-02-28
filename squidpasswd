@@ -1,0 +1,474 @@
+#!/usr/bin/perl
+#################################################
+# Authenticate using transparent proxy scripts
+#        Mike A. Leonetti
+#          2009-07-29
+#
+# http://www.mikealeonetti.com/wiki/index.php/Squid_LDAP_authentication_script
+#
+# Copyright (c) 2009-2012 Mike A. Leonetti
+# All rights reserved.
+#
+# This package is free software; you can redistribute it and/or
+# modify it under the same terms as Perl itself.
+#
+#################################################
+
+use strict;
+
+# For "ldap" auth method (you can comment this out when using "htpasswd" auth)
+use Net::LDAP;
+
+# For "htpasswd" auth method (you can comment these out when using "htpasswd" auth)
+use HTTPD::Authen;
+use HTTPD::GroupAdmin;
+
+# To access the MySQL database
+use DBI;
+
+# Prototypes
+sub print_form($$);
+sub do_auth();
+sub get_http_vars();
+sub authenticate_user($$);
+
+# Global vars
+use vars qw(%http_vars);
+
+# This is a list of the groups needed.
+# This can optionally be one group but if the user is not a member of this group he will be denied.
+my @groups_accepted = ( "Squid Admin", "knights" );
+
+# Set the auth type here (accepted options, "ldap" and "htpasswd")
+my $auth_type = "ldap";
+
+# The maximum amount of time allowed for a session (in minutes)
+my $max_time = 600;
+# The default amount of time for a session (in minutes)
+my $default_time = 15;
+
+# The path to the HTML template file for logins
+my $template_file = "/var/www/localhost/htdocs/squid/login.html";
+
+# The redirect time default (seconds)
+my $redirect_time = 10;
+
+########
+# MySQL options
+########
+my $mysql_host = "localhost";
+my $mysql_database = "squidauth";
+my $mysql_username = "squidauth";
+my $mysql_password = "squidauth";
+########
+# Auth type "ldap" options
+########
+# LDAP server and directory opts
+my $host = "localhost";
+my $suffix = "dc=directory,dc=server";
+my $usersdn = "ou=People,$suffix";
+my $groupdn = "ou=Group,$suffix";
+# The bing string required to auth the user with LDAP
+# OpenLDAP: uid=%s,$usersdn
+# ActiveDirectory: DOMAIN\\%s
+# Note that %s will be filled in with the user later
+my $bind_string = "uid=%s,$usersdn";
+# The group field that relates fo the user
+# OpenLDAP: memberUid
+# ActiveDirectory: member
+my $group_relation_field = "memberUid";
+# The field used in the user to match up the user to the directory
+# OpenLDAP: uid
+# ActiveDirectory: distinguishedName
+my $relation_attribute = "uid";
+# Field to look up the username
+# OpenLDAP: uid
+# ActiveDirectory: sAMAccountName
+my $username_field = "uid";
+
+########
+# Auth type "htpasswd" options
+########
+# The paths to the htpasswd and htgroup files
+my $htpasswd_path = "/home/mike/squidproject/htpasswd";
+my $htgroup_path = "/home/mike/squidproject/htgroup";
+# The type of database, one of 'DBM', 'Text', or 'SQL'
+my $dbtype = "Text";
+# HTTP server name (one of 'nsca' or 'apache')
+my $servername = "apache";
+
+#########################################
+# Code start
+#########################################
+# Put all of the sent variables in %http_vars for easy use
+get_http_vars();
+
+# Get the proper referrer information
+my $referrer_url;
+
+if( $http_vars{'referrer'} )
+{
+	$referrer_url = $http_vars{'referrer'};
+}
+else
+{
+	$referrer_url = $ENV{'HTTP_REFERER'};
+}
+
+# Make sure the current script and the referrer are not the same
+$referrer_url = '' if( $referrer_url =~ /$ENV{'HTTP_HOST'}/ );
+
+# Check to see which action we are doing
+if( $http_vars{'action'} eq "login" )
+{
+	unless( $http_vars{'username'} )
+	{
+		print_form( "fail", "Please fill out your username." );
+		exit();
+	}
+	unless( $http_vars{'password'} )
+	{
+		print_form( "fail", "Please put in a password." );
+		exit();
+	}
+
+# Get the time in int
+	my $request_time = int( $http_vars{'time'} );
+	
+	unless( $request_time )
+	{
+		print_form( "fail", "Please enter a session time." );
+		exit();
+	}
+
+	if( $request_time>$max_time )
+	{
+		print_form( "fail", "Session time cannot be greater than $max_time minutes." );
+		exit();
+	}
+
+# All is okay! Do some authing.
+	do_auth();
+}
+else
+{
+# Just print the form
+	print_form( '', '' );
+}
+
+sub print_form($$)
+{
+	my $call_type = shift;
+	my $error_string = shift;
+
+# Print the header (you can take this out if the header is auto-sent)
+	print "Content-type: text/html\n\n";
+
+	if( $call_type eq 'success' )
+	{
+		print qq#<html><head><title>Auth Success!</title>
+<style type="text/css">
+body {
+font: 12px Arial, Helvetica, sans-serif; 
+color: black;
+background-color: white; }
+</style>
+#;
+
+		if( $referrer_url )
+		{
+			print qq#<script language="JavaScript" type="text/javascript">  
+var count;
+
+function countDown(){  
+	if( count <=1 ){  
+		window.location = "$referrer_url";  
+	}else{  
+		count--;  
+		document.getElementById("timer").innerHTML = 'You will be redirected to<br /><a href="$referrer_url">$referrer_url</a><br />in '+count+' seconds.';
+		setTimeout( "countDown()", 1000 );
+	}  
+}
+
+window.onload = function(){ count=$redirect_time; countDown(); };
+</script>#;
+
+		}
+
+		print qq|</head><body>
+		<div style="margin: 100px 0 0 250px; border: 1px solid #51A5BA; overflow: hidden; width: 333px; border-radius: 5px 5px 5px 5px;">
+		<div style="padding: 2px 0 2px 5px; background: none repeat scroll 0 0 #6BCAE2; font-size: 16px; font-weight: bold;">Login success!</div>
+		<div style="padding-left: 5px; text-align: left; width: 333px;"><p>This computer is logged in for $http_vars{'time'} minutes.</p>|;
+
+		# Show the groups
+		print qq#<p>You are a member of the following groups.<ul>#;
+
+		# In this case error_string is actually the groups
+		for( @$error_string )
+		{
+			print qq#<li>$_</li>#;
+		}
+
+		print qq#</ul></p>#;
+
+		if( $referrer_url )
+		{
+			print qq!<div style="font-size: 14px; margin: 5px 15px 5px 5px; padding: 5px 5px 5px 5px; text-align: center; color: white; border-radius: 5px 5px 5px 5px; background: none repeat scroll 0 0 #41924B;" id="timer"></div>!;
+		}
+
+		print qq#</div></div></body></html>#;
+#;
+		return;
+	}
+
+# Set the variables to replace
+	my %replace_vars = ();
+
+	$replace_vars{'action'} = $ENV{'SCRIPT_NAME'};
+	$replace_vars{'referrer'} = $referrer_url;
+
+	if( $call_type eq 'fail' )
+	{
+		$replace_vars{'time'} = $http_vars{'time'};
+		$replace_vars{'username'} = $http_vars{'username'};
+		$replace_vars{'password'} = $http_vars{'password'};
+		$replace_vars{'error'} =  $error_string;
+	}
+	else
+	{
+		$replace_vars{'time'} = $default_time;
+	}
+
+# Make sure the template exists
+	unless( -e $template_file )
+	{
+		print( "ERROR: Template file $template_file not found! Exiting." );
+		exit();
+	}
+
+# Get the form
+	open( my $html_template, '<', $template_file );
+
+	while( my $line = <$html_template> )
+	{
+# Repalace the replace vars
+		foreach my $key ( keys %replace_vars )
+		{
+			my $value = $replace_vars{ $key };
+			$line =~ s/\{\$$key\}/$value/;
+		}
+# Replace the rest with blanks
+		$line =~ s/\{\$[^}]*\}//;
+
+# Output it to the browser
+		print( $line );
+	}
+
+	close( $html_template );
+}
+sub do_auth()
+{
+	my $username = $http_vars{'username'};
+	my $password = $http_vars{'password'};
+
+# Keep track of whether or not a "needed group" is satisfied
+	my $in_array = 0;
+
+# Put all of the groups in a neat little array
+	my @user_groups = ();
+
+	if( $auth_type eq 'ldap' )
+	{
+		my $ldap = Net::LDAP->new( $host, port=>389 );
+
+		my $bind_string_value = sprintf( $bind_string, $username );
+		my $mesg = $ldap->bind( $bind_string_value, password=>$password );
+
+		if( $mesg->code )
+		{
+			print_form( 'fail', "Username or password not valid." );
+			$ldap->unbind;
+			exit();
+		}
+
+# Get the relation attribute for searching in groups
+		$mesg = $ldap->search( filter=>"($username_field=$username)",
+				base=>$usersdn,
+				attrs=>[ $relation_attribute ] );
+		my $entry = ($mesg->entries)[0];
+		my $relation_value = ($entry->get_value( $relation_attribute ))[0];
+
+
+# Get all the groups the user is a member of
+		$mesg = $ldap->search( filter=>"($group_relation_field=$relation_value)",
+				base=>$groupdn,
+				attrs=>[ 'cn' ] );
+		my @entries = $mesg->entries;
+
+		if( !@entries )
+		{
+			print_form( 'fail', "You are not a member of any groups." );
+			$ldap->unbind;
+			exit();
+		}
+
+		foreach( @entries )
+		{
+# Get the first value (which this should return in a scalar context)
+			my $group = $_->get_value( 'cn' );
+
+			push( @user_groups, $group );
+
+			$in_array = 1 if( grep( $_ eq $group, @groups_accepted ) );
+		}
+
+
+		$ldap->unbind;
+	}
+	elsif( $auth_type eq 'htpasswd' )
+	{
+# Make sure the paths exist
+		unless( -e $htpasswd_path )
+		{
+			print_form( 'fail', "htpasswd file does not exist." );
+			exit();
+		}
+		unless( -e $htgroup_path )
+		{
+			print_form( 'fail', "htgroup file does not exist." );
+			exit();
+		}
+
+# Get the auth module
+		my $authen = new HTTPD::Authen( DBType => $dbtype,
+				DB     => $htpasswd_path,
+				Server => $servername );
+# AUTH!
+		unless( $authen->check( $username, $password ) )
+		{
+			print_form( 'fail', "Username or password not valid." );
+			exit();
+		}
+
+# Load the group module
+		my $group = new HTTPD::GroupAdmin ( DBType => $dbtype,
+				DB     => $htgroup_path,
+				Server => $servername );
+
+# Get all groups
+		my @groups = $group->list();
+
+		if( !@groups )
+		{
+			print_form( 'fail', "There are no groups." );
+			exit();
+		}
+
+# Get a list of all users for a group and see if our man is a part of that group
+		foreach my $mygroup ( @groups )
+		{
+# Now check to see if the user is a part of that group.
+# This is really round-about. Can I do this better somehow?
+			my @users = $group->list( $mygroup );
+			if( @users )
+			{
+# Test EACH user
+				foreach my $myuser ( @users )
+				{
+# Do we have a match?
+					if( $myuser eq $username )
+					{
+# Check to see if it's the group we want too
+						$in_array = 1 if( grep( $_ eq $mygroup, @groups_accepted ) );
+
+# We ARE a member of this group. Add it and SPLIT!
+						push( @user_groups, $mygroup );
+
+						last;
+					}
+				}
+			}
+		}
+	}
+	else
+	{
+		print_form( 'fail', "Auth type not recognized." );
+		exit();
+	}
+
+# Our groups weren't satisfied. We have a user who can't be authed
+	if( $in_array )
+	{
+		authenticate_user( $username, \@user_groups );
+	}
+	else
+	{
+		print_form( 'fail', "You are not a member of any groups who can be authenticated." );
+	}
+}
+sub get_http_vars()
+{
+        my $request = '';
+        %http_vars = ();
+
+        if( $ENV{'REQUEST_METHOD'} eq "GET" ) {
+                $request = $ENV{ 'QUERY_STRING' };
+        } elsif ( $ENV{ 'REQUEST_METHOD' } eq "POST" ) {
+                read( STDIN, $request,$ENV{ 'CONTENT_LENGTH' } )
+                        || die "Could not get query\n";
+        }
+        my @parameter_list = split( /&/,$request );
+        foreach( @parameter_list ) {
+                my( $name, $value ) = split( /=/ );
+                $name =~ s/\+/ /g;
+                $name =~ s/%([0-9A-F][0-9A-F])/pack("c",hex($1))/ge;
+                $value =~ s/\+/ /g;
+                $value =~ s/%([0-9A-F][0-9A-F])/pack("c",hex($1))/ge;
+
+# Trim the value
+		$value =~ s/^\s+//;
+		$value =~ s/\s+$//;
+
+		$http_vars{ $name } = $value;
+        }
+}
+sub authenticate_user($$)
+{
+	my $username = shift;
+	my $user_groups = shift;
+
+	my $ip_address = $ENV{'REMOTE_ADDR'};
+	my $current_time = time();
+
+	my $requested_time = int( $http_vars{'time'} );
+
+# Time error checking
+	$requested_time = $default_time unless( $requested_time );
+	$requested_time = $max_time if( $requested_time>$max_time );
+
+	my $end_time = ( $requested_time*60 )+$current_time;
+
+	my $dbh = DBI->connect( "dbi:mysql:$mysql_database;$mysql_host", $mysql_username, $mysql_password );
+
+	my $query;
+	
+# Insert the user and his IP and timing
+# Duplicate key inserts (save time with less queries).
+	$query = qq/INSERT INTO `addresses` (`ip`, `user`, `start_time`, `end_time` ) VALUES ('$ip_address', '$username', $current_time, $end_time) ON DUPLICATE KEY UPDATE `user`='$username', `end_time`=$end_time;/;
+	$dbh->do( $query );
+
+# Now insert the groups with an extended insert
+	my $query_values = '';
+
+	foreach my $mygroup( @$user_groups )
+	{
+		$query_values.= "," if( $query_values );
+		$query_values.= qq/ ('$mygroup','$username')/;
+	}
+	$query = 'INSERT IGNORE INTO `groups` (`group`,`user`) VALUES'.$query_values.';';
+	$dbh->do( $query );
+
+	$dbh->disconnect();
+	
+	print_form( 'success', $user_groups );
+}
